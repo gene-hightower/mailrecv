@@ -32,7 +32,7 @@
 #include <unistd.h>     // sleep()
 #include <stdarg.h>     // vargs
 #include <syslog.h>     // syslog()
-#include <pcre.h>       // perl regular expressions API (see 'man pcreapi(3)')
+#include <pcre.h>       // perl regex API (see 'man pcreapi(3)')
 #include <sys/socket.h> // getpeername()
 #include <netdb.h>      // gethostbyaddr(), NI_MAXHOST..
 #include <netinet/in.h>
@@ -44,6 +44,16 @@
 #include <sstream>
 
 using namespace std;
+
+// SMTP command bit flags
+//     One per command received, used mainly for logging
+//
+enum {
+    SMTP_CMD_QUIT = 0x0001, SMTP_CMD_HELO = 0x0002, SMTP_CMD_MAIL = 0x0004, SMTP_CMD_RCPT = 0x0008,
+    SMTP_CMD_DATA = 0x0010, SMTP_CMD_VRFY = 0x0020, SMTP_CMD_RSET = 0x0040, SMTP_CMD_NOOP = 0x0080,
+    SMTP_CMD_HELP = 0x0100, SMTP_CMD_EXPN = 0x0200, SMTP_CMD_SEND = 0x0400, SMTP_CMD_SOML = 0x0800,
+    SMTP_CMD_SAML = 0x1000, SMTP_CMD_TURN = 0x2000, SMTP_CMD_EHLO = 0x4000
+};
 
 #define LINE_LEN        4096
 #define CRLF            "\r\n"            // RFC 821 (GLOSSARY) / RFC 822 (APPENDIX D)
@@ -1082,13 +1092,6 @@ int HandleSMTP() {
         SMTP_Reply(os.str().c_str());
     }
 
-// Handle resetting SMTP state
-#define RSET() \
-            smtp_cmd_flags |= 0x0040; \
-            mail_from[0] = 0;         \
-            rcpt_tos.clear();         \
-            letter.clear();
-
     // Limit counters
     int smtp_commands_count = 0;
     int smtp_unknowncmd_count = 0;
@@ -1145,18 +1148,18 @@ int HandleSMTP() {
         arg2[LINE_LEN] = 0;
 
         if ( ISCMD("QUIT") ) {
-            smtp_cmd_flags |= 0x0001;
+            smtp_cmd_flags |= SMTP_CMD_QUIT;
             quit = 1;
             ostringstream os;
             os << "221 " << our_domain << " closing connection";
             SMTP_Reply(os.str().c_str());
         } else if ( ISCMD("HELO") ) {
-            smtp_cmd_flags |= 0x0002;
+            smtp_cmd_flags |= SMTP_CMD_HELO;
             ostringstream os;
             os << "250 " << our_domain << " Hello " << G_remotehost << " [" << G_remoteip << "]";
             SMTP_Reply(os.str().c_str());
         } else if ( ISCMD("MAIL") ) {
-            smtp_cmd_flags |= 0x0004;
+            smtp_cmd_flags |= SMTP_CMD_MAIL;
             if ( ISARG1("FROM:")) {                         // "MAIL FROM: foo@bar.com"? (space after ":")
                 strcpy(mail_from, arg2);
                 ostringstream os;
@@ -1177,7 +1180,7 @@ int HandleSMTP() {
                 }
             }
         } else if ( ISCMD("RCPT") ) {
-            smtp_cmd_flags |= 0x0008;
+            smtp_cmd_flags |= SMTP_CMD_RCPT;
             // RFC 5321 3.3:
             //     "If RCPT appears w/out previous MAIL, server MUST return a
             //      503 "Bad sequence of commands" response."
@@ -1225,7 +1228,7 @@ rcpt_to:
                 Log("ERROR: unknown RCPT argument '%s'\n", arg1);
             }
         } else if ( ISCMD("DATA") ) {
-            smtp_cmd_flags |= 0x0010;
+            smtp_cmd_flags |= SMTP_CMD_DATA;
             if ( rcpt_tos.size() == 0 ) {
                 ++smtp_fail_commands_count;
                 SMTP_Reply("503 Bad sequence of commands -- missing RCPT TO");
@@ -1254,35 +1257,41 @@ rcpt_to:
                         }
                     }
                 }
-                RSET();
+                // Clear these
+                mail_from[0] = 0;
+                rcpt_tos.clear();
+                letter.clear();
             }
         } else if ( ISCMD("VRFY") ) {
-            smtp_cmd_flags |= 0x0020;
+            smtp_cmd_flags |= SMTP_CMD_VRFY;
             SMTP_Reply("252 send some mail, will try my best");
         } else if ( ISCMD("RSET") ) {
-            RSET();
+            smtp_cmd_flags |= SMTP_CMD_RSET;
+            mail_from[0] = 0;
+            rcpt_tos.clear();
+            letter.clear();
             SMTP_Reply("250 OK");
         } else if ( ISCMD("NOOP") ) {
-            smtp_cmd_flags |= 0x0080;
+            smtp_cmd_flags |= SMTP_CMD_NOOP;
             SMTP_Reply("250 OK");
         } else if ( ISCMD("HELP") ) {
-            smtp_cmd_flags |= 0x0100;
+            smtp_cmd_flags |= SMTP_CMD_HELP;
             SMTP_Reply("214-Help:");
             SMTP_Reply("214-HELO, DATA, RSET, NOOP, QUIT,");
             SMTP_Reply("214-MAIL FROM:, RCPT TO:, VRFY, HELP,");
             SMTP_Reply("214 EXPN, SEND, SOML, SAML, TURN");
         } else if ( ISCMD("EXPN") ) {
-            smtp_cmd_flags |= 0x0200;
+            smtp_cmd_flags |= SMTP_CMD_EXPN;
 no_support:
             ++smtp_fail_commands_count;
             SMTP_Reply("502 Command not implemented or disabled");
             Log("ERROR: Remote tried '%s', we don't support it\n", cmd);
-        } else if ( ISCMD("SEND") ) { smtp_cmd_flags |= 0x0400; goto no_support;
-        } else if ( ISCMD("SOML") ) { smtp_cmd_flags |= 0x0800; goto no_support;
-        } else if ( ISCMD("SAML") ) { smtp_cmd_flags |= 0x1000; goto no_support;
-        } else if ( ISCMD("TURN") ) { smtp_cmd_flags |= 0x2000; goto no_support;
+        } else if ( ISCMD("SEND") ) { smtp_cmd_flags |= SMTP_CMD_SEND; goto no_support;
+        } else if ( ISCMD("SOML") ) { smtp_cmd_flags |= SMTP_CMD_SOML; goto no_support;
+        } else if ( ISCMD("SAML") ) { smtp_cmd_flags |= SMTP_CMD_SAML; goto no_support;
+        } else if ( ISCMD("TURN") ) { smtp_cmd_flags |= SMTP_CMD_TURN; goto no_support;
         } else if ( ISCMD("EHLO") ) {
-            smtp_cmd_flags |= 0x4000;
+            smtp_cmd_flags |= SMTP_CMD_EHLO;
             // EHLO is commonly sent first by remotes.
             //      Log as "IGNORED" (instead of ERROR) so syslog doesn't highlight it in red.
             SMTP_Reply("500 Unknown command");
