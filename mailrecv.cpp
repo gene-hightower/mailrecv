@@ -1248,13 +1248,17 @@ rcpt_to:
                     ++smtp_fail_commands_count;
                 } else {
                     // Handle mail delivery
+                    bool failure = false;
                     for ( size_t t=0; t<rcpt_tos.size(); t++ ) {
                         const char *rcpt_to = rcpt_tos[t].c_str();
-                        if ( G_conf.DeliverMail(mail_from, rcpt_to, letter) == 0 ) {
-                            SMTP_Reply("250 Message accepted for delivery");
-                        } else {
+                        if ( G_conf.DeliverMail(mail_from, rcpt_to, letter) ) {
+                            failure = true;
                             ++smtp_fail_commands_count;
+                            break; // Quit trying after 1st failure
                         }
+                    }
+                    if (!failure) {
+                        SMTP_Reply("250 Message accepted for delivery");
                     }
                 }
                 // Clear these
