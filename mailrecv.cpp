@@ -923,7 +923,7 @@ public:
         sleep(secs);                        // use sleep() for timer
         // Log to stderr from child thread
         //    Write to log first -- write() to remote may hang if fail2ban banned it
-        Log(emsg.c_str());
+        Log("%s", emsg.c_str());
         // Timer expired? Send message to remote and exit immediately
         write(1, emsg.c_str(), strlen(emsg.c_str()));
         exit(0);
@@ -1019,7 +1019,7 @@ int SMTP_ReadLetter(FILE *fp,                    // [in] connection to remote
                     string &emsg) {              // [out] error to send remote on return -1
     char s[LINE_LEN+1];
     long bytecount = 0;
-    while (fgets(s, LINE_LEN, stdin)) {
+    while (fgets(s, LINE_LEN, fp)) {
         // Remove trailing CRLF
         StripCRLF(s);
         ISLOG("l") Log("DEBUG: Letter: '%s'\n", s);
@@ -1028,7 +1028,7 @@ int SMTP_ReadLetter(FILE *fp,                    // [in] connection to remote
         // Check limit
         bytecount += strlen(s);
         if ( G_conf.CheckLimit(bytecount, "smtp_data_size", emsg) < 0 ) {
-            Log("SMTP DATA limit reached (%d)\n", bytecount);
+            Log("SMTP DATA limit reached (%ld)\n", bytecount);
             return -1;
         }
         // Otherwise append lines with CRLF removed to letter
@@ -1081,6 +1081,13 @@ int HandleSMTP() {
         os << "220 " << our_domain << " SMTP (RFC 821/822)";    // TODO -- allow custom identity to be specified
         SMTP_Reply(os.str().c_str());
     }
+
+// Handle resetting SMTP state
+#define RSET() \
+            smtp_cmd_flags |= 0x0040; \
+            mail_from[0] = 0;         \
+            rcpt_tos.clear();         \
+            letter.clear();
 
     // Limit counters
     int smtp_commands_count = 0;
@@ -1178,6 +1185,8 @@ int HandleSMTP() {
             if ( mail_from[0] == 0 ) {
                 ++smtp_fail_commands_count;
                 SMTP_Reply("503 Bad sequence of commands -- missing MAIL FROM");
+                Log("ERROR: 'RCPT' before 'MAIL': bad sequence of commands\n", arg1);
+                goto command_done;
             }
             char *address;
             if ( ISARG1("TO:") ) {                             // "RCPT TO: foo@bar.com" (not recommended RFC 5321)
@@ -1245,15 +1254,13 @@ rcpt_to:
                         }
                     }
                 }
+                RSET();
             }
         } else if ( ISCMD("VRFY") ) {
             smtp_cmd_flags |= 0x0020;
             SMTP_Reply("252 send some mail, will try my best");
         } else if ( ISCMD("RSET") ) {
-            smtp_cmd_flags |= 0x0040;
-            mail_from[0] = 0;
-            rcpt_tos.clear();
-            letter.clear();
+            RSET();
             SMTP_Reply("250 OK");
         } else if ( ISCMD("NOOP") ) {
             smtp_cmd_flags |= 0x0080;
