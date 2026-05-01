@@ -1,4 +1,4 @@
-VERSION = 1.25
+VERSION = 1.26
 SHELL   = /bin/sh
 NROFF   = nroff
 POD2MAN = pod2man --center "mailrecv Documentation"
@@ -7,7 +7,7 @@ POD2MAN = pod2man --center "mailrecv Documentation"
 all: mailrecv man html
 
 mailrecv: mailrecv.cpp
-	g++ -DVERSION=\"$(VERSION)\" -Wall mailrecv.cpp -o mailrecv -l pcre -lpthread
+	g++ -DVERSION=\"$(VERSION)\" -Wall mailrecv.cpp -I/opt/homebrew/include -o mailrecv -l pcre -lpthread
 
 clean: FORCE
 	@echo Cleaning all files
