@@ -17,7 +17,7 @@ clean: FORCE
 	-rm -f mailrecv
 	-rm -f mailrecv.8 mailrecv.conf.8
 	-rm -f mailrecv.html mailrecv.conf.html
-	( cd ref; make clean )
+	( cd regression; make clean )
 
 # Build man pages
 man: mailrecv.pod mailrecv.conf.pod

@@ -64,7 +64,7 @@ void AddReturnPath(vector<string>& letter, const char* mail_from) {
 // Show letter on stdout
 void ShowLetter(const char *msg, vector<string>& letter) {
     printf("%s\n", msg);
-    for (int t=0; t<letter.size(); t++) {
+    for (size_t t=0; t<letter.size(); t++) {
         printf("%s\n", letter[t].c_str());
     }
 }
