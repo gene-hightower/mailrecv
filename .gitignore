@@ -1,0 +1,6 @@
+regression/test-insert-return-path
+regression/test-isolate-address
+mailrecv
+*.8
+*.html
+*.tmp

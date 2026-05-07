@@ -1,3 +1,5 @@
+(No longer logging CHANGES - using git log instead)
+
 1.20 - Aug 1, 2022
 ==================
    > Added IPV6 support
