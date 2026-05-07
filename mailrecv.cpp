@@ -26,10 +26,12 @@
 // 80 //////////////////////////////////////////////////////////////////////////
 
 #include <stdio.h>
+#include <ctype.h>      // toupper()
+#include <time.h>       // time(), localtime()..
 #include <string.h>     // strchr()
 #include <errno.h>      // errno
 #include <stdlib.h>     // exit()
-#include <unistd.h>     // sleep()
+#include <unistd.h>     // sleep(), gethostname()
 #include <stdarg.h>     // vargs
 #include <syslog.h>     // syslog()
 #include <pcre.h>       // perl regex API (see 'man pcreapi(3)')
@@ -39,6 +41,8 @@
 #include <arpa/inet.h>
 #include <sys/file.h>   // flock()
 #include <pthread.h>    // pthread_create() for execution timer
+
+// STL
 #include <string>
 #include <vector>
 #include <sstream>
@@ -65,6 +69,7 @@ enum {
 
 ///// GLOBALS /////
 const char *G_debugflags = "";            // debug logging flags (see mailrecv.conf for description)
+char        G_localhost[256];             // local hostname
 char        G_remotehost[256];            // Remote's hostname
 char        G_remoteip[NI_MAXHOST];       // Remote's IP address
 char       *G_logfilename = NULL;         // log filename if configured (if NULL, uses syslog)
@@ -78,7 +83,7 @@ int LogLock() {
     if ( !G_logfp || G_logfp == stderr ) return(0); // reasons /not/ to lock
     if ( flock(fileno(G_logfp), LOCK_EX) < 0 ) {
         fprintf(stderr, "%s: LogLock(): flock(LOCK_EX): %s", PROGNAME, strerror(errno));
-	return(-1);
+        return(-1);
     }
     return(0);
 }
@@ -90,22 +95,39 @@ int LogUnlock() {
     if ( !G_logfp || G_logfp == stderr ) return(0); // reasons /not/ to lock
     if ( flock(fileno(G_logfp), LOCK_UN) < 0 ) {
         fprintf(stderr, "%s: LogUnlock(): flock(LOCK_UN): %s", PROGNAME, strerror(errno));
-	return(-1);
+        return(-1);
     }
     return(0);
 }
 
+// Return current time as localtime()
+struct tm* GetLocaltime(void) {
+    time_t secs;        // Current UNIX time
+    time(&secs);
+    return localtime(&secs);
+}
+
+// Return date as e.g. 'Fri, 24 Apr 2026 16:28:03 -0700 (PDT)'
+//                      |    |  |   |    |  |  |   |      |
+//                      %a   %d %b  %G   %H %M %S  %z     %Z
+void GetRFCDate(char *datestr, int len) {
+    strftime(datestr, len,
+             "%a, %d %b %G %H:%M:%S %z (%Z)", GetLocaltime());
+    datestr[0] = toupper(datestr[0]);  // upcase first letter of day abbrev
+}
+
+// Return date string in current locale format, e.g. 'Thu May  7 08:54:15 PDT 2026'
+void GetLogDate(char *datestr, int len) {
+    // POSIX locale: "%a %b %e %H:%M:%S %Y" 
+    strftime(datestr, len, "%c", GetLocaltime());
+}
+
 // Log prefix: each line in log prefixed by this string (date/time/etc)
 void GetLogPrefix(string &return_msg) {
-    // Get current time/date as a string
-    time_t    secs;		// Current UNIX time
-    struct tm *date;		// Current date/time
-    char      datestr[1024];	// Date/time string
-    time(&secs);
-    date = localtime(&secs);
-    strftime(datestr, sizeof(datestr), "%c", date);
-
     ostringstream os;
+    char datestr[1024];
+
+    GetLogDate(datestr, sizeof(datestr));    // current time/date as string
     // Log date/time/pid
     os << datestr << " " << PROGNAME << "_V" << VERSION << "[" << getpid() << "]: ";
     // Fail2ban filtering: show remote ip after pid in every line of log output
@@ -821,17 +843,34 @@ public:
         return err;     // let caller decide what to do
     }
 
+    // Modify 'letter', inserting Return-Path:/Received: headers (RFC 821, 4.1.1 'DATA')
+    void AddReturnPath(vector<string>& letter, const char* mail_from) {
+        char rfc_datestr[1024]; GetRFCDate(rfc_datestr, sizeof(rfc_datestr));
+        string return_path = string("Return-Path: <") + string(mail_from)
+                           + string(">");
+        string received    = string("Received: from ") + string(G_remotehost)
+                           + string(" by ") + string(G_localhost)
+                           + string(" ; ") + string(rfc_datestr);
+        letter.insert(letter.begin()+0, return_path);   // Return-Path: at top
+        letter.insert(letter.begin()+1, received);      // Received: below Return-Path:
+    }
+
     // Deliver mail to recipient.
     //     If there's no configured recipient, write to deadletter file.
+    //     Any errors are logged.
     //
     // Returns:
     //     0 on success
-    //    -1 on error (reason sent to server on stdout).
+    //    -1 on error (reason is logged)
     //
-    int DeliverMail(const char* mail_from,          // SMTP 'mail from:'
-                    const char *rcpt_to,            // SMTP 'rcpt to:'
-                    const vector<string>& letter) { // email contents, including headers, blank line, body
+    int DeliverMail(const char *mail_from,             // SMTP 'mail from:'
+                    const char *rcpt_to,               // SMTP 'rcpt to:'
+                    const vector<string>& in_letter) { // email contents, including headers, blank line, body
         size_t t;
+
+        // Make local copy of letter, add Return-Path:/Received:
+        vector<string> letter;
+        AddReturnPath(letter, mail_from);
 
         // Check for 'append to file' recipient..
         for ( t=0; t<deliver_rcpt_to_file_address.size(); t++ ) {
@@ -953,6 +992,17 @@ Configure G_conf;
 
 // Minimum commands we must support:
 //      HELO MAIL RCPT DATA RSET NOOP QUIT VRFY
+
+// Return localhost in 'hostname', not to exceed 'size'
+//     Errors sent to Log()
+//
+void GetLocalHostname(char *hostname, int len) {
+    if (gethostname(hostname, len) < 0) {       // unistd
+        Log("gethostname() failed: can't determine localhost name\n");
+        strcpy(hostname, "LOCALHOST");
+    }
+    hostname[len-1] = 0;        // POSIX.1 re: truncation
+}
 
 // Return with remote's ip address + hostname in globals
 //    Sets globals: G_remotehost, G_remoteip
@@ -1247,15 +1297,25 @@ rcpt_to:
                     SMTP_Reply("554 Message data was too short");
                     ++smtp_fail_commands_count;
                 } else {
-                    // Handle mail delivery
+                    // Handle mail delivery for all rcpt_tos[]
+                    bool success = false;       // set on any success
+                    bool failure = false;       // set on any failure
                     for ( size_t t=0; t<rcpt_tos.size(); t++ ) {
                         const char *rcpt_to = rcpt_tos[t].c_str();
                         if ( G_conf.DeliverMail(mail_from, rcpt_to, letter) == 0 ) {
-                            SMTP_Reply("250 Message accepted for delivery");
+                            success = true;     // at least one recipient worked
                         } else {
-                            ++smtp_fail_commands_count;
+                            failure = true;     // at lease one recipient failed
                         }
                     }
+                    // Count any failures as one bad command
+                    if (failure) { ++smtp_fail_commands_count; }
+                    // One status reply for all deliveries:
+                    //    1. Success (250) if one (or more) recipients succeed delivery
+                    //    2. Error (451) only if /no/ success (*all* recipients failed)
+                    //
+                    if (success) { SMTP_Reply("250 Message accepted for delivery");  } // RFC 821 4.1.1
+                    else         { SMTP_Reply("451 All recipients failed delivery"); } // RFC 821 4.3
                 }
                 // Clear these
                 mail_from[0] = 0;
@@ -1427,6 +1487,7 @@ int main(int argc, const char *argv[]) {
 
     // Do this AFTER loading config, so we can Log() errors properly..
     GetRemoteHostInfo(fileno(stdin));
+    GetLocalHostname(G_localhost, sizeof(G_localhost));
 
     // Log remote host connection AFTER config loaded
     //     ..in case config sets 'logfile'
