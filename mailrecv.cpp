@@ -844,15 +844,18 @@ public:
     }
 
     // Modify 'letter', inserting Return-Path:/Received: headers (RFC 821, 4.1.1 'DATA')
-    void AddReturnPath(vector<string>& letter, const char* mail_from) {
+    void AddReturnPath(vector<string>& letter, const char* in_mail_from) {
+        char *mail_from = strdup(in_mail_from); IsolateAddress(mail_from);
         char rfc_datestr[1024]; GetRFCDate(rfc_datestr, sizeof(rfc_datestr));
         string return_path = string("Return-Path: <") + string(mail_from)
                            + string(">");
         string received    = string("Received: from ") + string(G_remotehost)
                            + string(" by ") + string(G_localhost)
+                           + string(" via mailrecv (V ") + string(VERSION) + string(")")
                            + string(" ; ") + string(rfc_datestr);
         letter.insert(letter.begin()+0, return_path);   // Return-Path: at top
         letter.insert(letter.begin()+1, received);      // Received: below Return-Path:
+        free(mail_from);
     }
 
     // Deliver mail to recipient.
@@ -869,7 +872,7 @@ public:
         size_t t;
 
         // Make local copy of letter, add Return-Path:/Received:
-        vector<string> letter;
+        vector<string> letter = in_letter;
         AddReturnPath(letter, mail_from);
 
         // Check for 'append to file' recipient..
